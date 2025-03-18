@@ -1,12 +1,8 @@
-use super::Context;
+use super::{Context, TemplateString};
 use crate::processing::PipelineData;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::LazyLock;
 use thiserror::Error;
-
-static RE_TEMPLATE_STRING: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(\$\{[^}]+}|[^$]+)").unwrap());
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
@@ -24,19 +20,10 @@ pub enum ContextValue {
     Prim(PrimitiveContextValue),
 }
 
-#[derive(Clone, Debug)]
-pub struct TemplateString(Vec<TemplateStringFragment>);
-
 #[derive(Debug, Error)]
 pub enum ContextEvaluationError {
     #[error("Placeholder '{0}' could not be resolved.")]
     Interpolation(String),
-}
-
-#[derive(Clone, Debug)]
-enum TemplateStringFragment {
-    Literal(String),
-    Template(String),
 }
 
 impl PrimitiveContextValue {
@@ -58,70 +45,6 @@ impl ContextValue {
                 Ok(PrimitiveContextValue::String(s.interpolate(ctx)?))
             }
         }
-    }
-}
-
-impl TemplateString {
-    pub fn interpolate(&self, ctx: &Context) -> Result<String, ContextEvaluationError> {
-        let mut s = String::new();
-        for fragment in &self.0 {
-            match fragment {
-                TemplateStringFragment::Literal(l) => s.push_str(l),
-                TemplateStringFragment::Template(k) => {
-                    let value = ctx
-                        .get(k)
-                        .ok_or(ContextEvaluationError::Interpolation(k.to_string()))?;
-                    s.push_str(value.to_prim(ctx)?.as_string().as_str());
-                }
-            }
-        }
-        Ok(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for TemplateString {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let fragments: Vec<TemplateStringFragment> = RE_TEMPLATE_STRING
-            .captures_iter(&s)
-            .map(|cap| {
-                let matched = &cap[0];
-                if matched.starts_with("${") && matched.ends_with('}') {
-                    let placeholder = matched.trim_start_matches("${").trim_end_matches('}');
-                    TemplateStringFragment::Template(placeholder.to_string())
-                } else {
-                    TemplateStringFragment::Literal(matched.to_string())
-                }
-            })
-            .collect();
-
-        if fragments.is_empty() {
-            return Err(serde::de::Error::custom(format!(
-                "Invalid template string: '{}' contains no valid fragments (expected at least one placeholder in the format '${{...}}')",
-                s
-            )));
-        }
-
-        Ok(TemplateString(fragments))
-    }
-}
-
-impl Serialize for TemplateString {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut s = String::new();
-        for fragment in &self.0 {
-            match fragment {
-                TemplateStringFragment::Literal(l) => s.push_str(l),
-                TemplateStringFragment::Template(t) => s.push_str(&format!("${{{}}}", t)),
-            }
-        }
-        serializer.serialize_str(&s)
     }
 }
 
